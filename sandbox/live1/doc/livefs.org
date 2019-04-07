@@ -1,0 +1,28 @@
+#+TITLE: livefs - a simple live linux distribution
+#+AUTHOR: Joachim F.
+#+EMAIL: joachifm@fastmail.fm
+
+#+OPTIONS: author:t
+#+OPTIONS: date:nil
+#+OPTIONS: email:t
+#+OPTIONS: f:t
+#+OPTIONS: toc:nil
+
+livefs is a simple live linux distribution for UEFI enabled machines.
+
+* Usage
+
+** Prerequisites
+
+- ~dd(1)~
+- ~sudo(8)~
+- [[https://nixos.org/nix][Nix]], version 2.0
+
+** Installing live fs onto a bootable medium
+
+Provided that ~/dev/sdb~ is a memory stick, do
+
+#+BEGIN_SRC sh :eval never :exports code
+  $ nix-build . -A build.livefs
+  $ sudo dd if=result/live.fs of=/dev/sdb
+#+END_SRC

@@ -1,0 +1,139 @@
+#! /usr/bin/env bash
+
+#
+# Utilities
+#
+
+now() {
+    date +'%Y%m%d%N'
+}
+
+escape_filepath() {
+    echo "${1?Filepath}" | tr '/' '-'
+}
+
+genkey_4096_bin() {
+    head -c 512 /dev/urandom
+}
+
+genkey_4096_hex() {
+    tr -dc '[:xdigit:]' < /dev/urandom | head -c 512
+}
+
+
+#
+# Low-level operations
+#
+
+_newcrypt() {
+    local bdev=${1?Backing device}
+    local keyfile=${2?Key file}
+    yes | cryptsetup luksFormat "$bdev" "$keyfile"
+}
+
+
+_newpool() {
+    local name=${1?New pool name} ; shift
+    local bdevs=${*}
+
+    if [[ ${#bdevs[*]} < 1 ]] ; then
+        echo "one or more backing devices required" >&2
+        return 1
+    fi
+
+    local bdev
+    for bdev in "${bdevs[@]}" ; do
+        if ! ([[ -b "$bdev" ]] || [[ -f "$bdev" ]]) ; then
+            echo "bdev $bdev is not a block special or regular file" >&2
+            return 1
+        fi
+        if ! [[ -w "$bdev" ]] ; then
+            echo "bdev $bdev is not writable" >&2
+            return 1
+        fi
+    done
+
+    local pooldev=/dev/$name/lvpool
+
+    vgcreate "$name" "${bdevs[@]}"
+    lvcreate --type thin-pool -l 95%FREE -n lvpool "$name"
+
+    echo "$pooldev"
+}
+
+
+_newfs() {
+    local pool=${1?Pool name}
+    local name=${2?Name of new filesystem}
+    local size=${3?Size of new filesystem}
+    local type=${4:-'raw'}
+
+    local fsdev=/dev/$pool/$name
+
+    lvcreate -T "$pool/lvpool" -V "$size" -n "$name"
+
+    case "$type" in
+        'xfs+reflink')
+            mkfs.xfs -m crc=1 -m reflink=1 "$fsdev" ;;
+        'xfs')
+            mkfs.xfs "$fsdev" ;;
+        'swap')
+            mkswap "$fsdev" ;;
+        'raw')
+            : true ;;
+        *)
+            echo "supported fs types: 'xfs+reflink', 'xfs', 'swap', 'raw'" >&2
+            return 1
+    esac
+
+    echo "$fsdev"
+}
+
+_dupfs() {
+    local pool=${1?Pool name}
+    local origin=${2?Name of origin filesystem}
+    local name=${3?Name of new filesystem}
+
+    local fsdev=/dev/$pool/$name
+
+    lvcreate -s -p rw --setactivationskip n -n "$name" "$pool/$origin"
+
+    # See man:lvmthin(7) ("XFS on snapshots").  Briefly, we need to ensure
+    # that the new fs gets a unique UUID (not inherit the parent UUID).
+    xfs_repair -L "$fsdev"
+    xfs_admin -U generate "$fsdev"
+
+    echo "$fsdev"
+}
+
+_snapfs() {
+    local pool=${1?Pool name}
+    local origin=${1?Filesystem origin}
+    local defaultname; defaultname=${origin}_$(now)
+    local name=${2:-$defaultname}
+
+    local fsdev=/dev/$pool/$name
+
+    lvcreate -s -p r --setactivationskip y -n "$name" --addtag snapshot "$pool/$origin"
+
+    echo "$fsdev"
+}
+
+_mountfs() {
+    local pool=${1?Pool name}
+    local what=${2?Filesystem name}
+    local where=${3?Mount point}
+
+    install -d "$where" -m 755
+    mount "/dev/$pool/$what" "$where"
+
+    echo "$where"
+}
+
+
+#
+# High-level interface
+#
+
+prog=${0#*/}
+subprog=$1 ; shift 1
